@@ -204,3 +204,5 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = PhotoCatalogApp(root, "/Users/alanjackson/Pictures")
     root.mainloop()
+
+# adding something
