@@ -205,4 +205,4 @@ if __name__ == "__main__":
     app = PhotoCatalogApp(root, "/Users/alanjackson/Pictures")
     root.mainloop()
 
-# adding something
+# adding something else
