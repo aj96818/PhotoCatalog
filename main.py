@@ -1,9 +1,11 @@
 import os
 import tkinter as tk
-from tkinter import ttk, messagebox
-from PIL import Image, ImageTk
+from tkinter import messagebox
 import mysql.connector
 import exifread
+from PIL import Image, ImageTk
+import rawpy
+import numpy as np
 
 # Configure MySQL Connection
 DB_CONFIG = {
@@ -30,80 +32,198 @@ class PhotoCatalogApp:
             root.destroy()
             return
 
-        # UI Elements
-        self.image_label = tk.Label(root)
-        self.image_label.pack(expand=True)
+        # For category keyboard shortcuts
+        self.category_map = {
+            "l": "Landscape",
+            "f": "Family",
+            "v": "Vacation",
+            "p": "Portfolio"
+        }
 
-        # Controls
+        # Main frames
+        self.top_frame = tk.Frame(root)
+        self.top_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Frame for the image (left)
+        self.image_label = tk.Label(self.top_frame)
+        self.image_label.pack(side=tk.LEFT, expand=True)
+
+        # Frame for the category tiles (right)
+        self.category_frame = tk.Frame(self.top_frame)
+        self.category_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
+        # Bottom controls
         self.controls_frame = tk.Frame(root)
-        self.controls_frame.pack(fill=tk.X)
+        self.controls_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
+        # Navigation Buttons
         self.back_button = tk.Button(self.controls_frame, text="Back", command=self.previous_image)
         self.back_button.pack(side=tk.LEFT, padx=5)
 
         self.forward_button = tk.Button(self.controls_frame, text="Next", command=self.next_image)
         self.forward_button.pack(side=tk.LEFT, padx=5)
 
+        # Mark for deletion
         self.delete_var = tk.BooleanVar()
-        self.delete_check = tk.Checkbutton(self.controls_frame, text="Mark for Deletion", variable=self.delete_var)
+        self.delete_check = tk.Checkbutton(
+            self.controls_frame,
+            text="Mark for Deletion",
+            variable=self.delete_var
+        )
         self.delete_check.pack(side=tk.LEFT, padx=5)
 
+        # Rating
         self.rating_var = tk.IntVar(value=0)
         self.rating_label = tk.Label(self.controls_frame, text="Rating:")
         self.rating_label.pack(side=tk.LEFT, padx=5)
 
+        # Create radio buttons for rating (1-4)
+        self.rating_buttons = []
         for i in range(1, 5):
-            rb = tk.Radiobutton(self.controls_frame, text=str(i), variable=self.rating_var, value=i)
+            rb = tk.Radiobutton(
+                self.controls_frame,
+                text=str(i),
+                variable=self.rating_var,
+                value=i
+            )
             rb.pack(side=tk.LEFT)
+            self.rating_buttons.append(rb)
 
-        self.label_var = tk.StringVar()
-        self.label_dropdown = ttk.Combobox(self.controls_frame, textvariable=self.label_var, values=LABEL_CATEGORIES)
-        self.label_dropdown.set("Select Label")
-        self.label_dropdown.pack(side=tk.LEFT, padx=5)
+        # Category tiles (full category name displayed)
+        self.label_var = tk.StringVar(value="")
+        self.category_buttons = {}
+        self.default_btn_bg = None  # Will store default background color
 
+        for category in LABEL_CATEGORIES:
+            btn = tk.Button(
+                self.category_frame,
+                text=category,
+                width=12,
+                height=2,
+                command=lambda c=category: self.select_category(c),
+                relief=tk.RAISED
+            )
+            btn.pack(pady=5)
+            self.category_buttons[category] = btn
+            if self.default_btn_bg is None:
+                self.default_btn_bg = btn.cget("bg")
+
+        # Save button
         self.save_button = tk.Button(self.controls_frame, text="Save", command=self.save_metadata)
         self.save_button.pack(side=tk.LEFT, padx=5)
 
+        # Show filename of current image at bottom-right
+        self.filename_label = tk.Label(self.controls_frame, text="")
+        self.filename_label.pack(side=tk.RIGHT, padx=5)
+
+        # Key bindings
+        self.root.bind("<Key>", self.on_key_press)
+        self.root.bind("<Return>", lambda e: self.save_metadata())
+
         self.load_image()
+
+    def on_key_press(self, event):
+        """Handle keyboard shortcuts for ratings (1-4), categories (l, f, v, p),
+           and toggle mark-for-deletion (d)."""
+        char = event.char.lower()
+
+        # Ratings: 1-4
+        if char in ['1', '2', '3', '4']:
+            self.rating_var.set(int(char))
+
+        # Categories: l, f, v, p
+        if char in self.category_map:
+            self.select_category(self.category_map[char])
+
+        # Toggle mark-for-deletion: d
+        if char == 'd':
+            self.delete_var.set(not self.delete_var.get())
+
 
     def get_image_files(self, directory):
         """Retrieve all image files in directory and subdirectories."""
-        supported_formats = ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff')
+        supported_formats = (
+            '.nef', '.dng', '.tiff', '.png', '.jpeg',
+            '.jpg', '.cr2', '.bmp', '.gif'
+        )
         image_files = []
-        for root, _, files in os.walk(directory):
+        for root_dir, _, files in os.walk(directory):
             for file in files:
+                # Skip hidden resource-fork files on macOS:
+                if file.startswith("._"):
+                    continue
+
                 if file.lower().endswith(supported_formats):
-                    image_files.append(os.path.join(root, file))
+                    image_files.append(os.path.join(root_dir, file))
         return sorted(image_files)
 
+
+    def connect_to_db(self):
+        """Establishes a database connection."""
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            return conn
+        except mysql.connector.Error as err:
+            messagebox.showerror("Database Error", f"Error connecting to database: {err}")
+            return None
+
     def load_image(self):
-        """Loads and displays the current image, rotating if necessary."""
+        """Loads and displays the current image, rotating if necessary.
+        Also clears previous selections."""
         if not self.image_files:
             return
 
+        # Clear all selections for new image
+        self.delete_var.set(False)
+        self.rating_var.set(0)
+        self.label_var.set("")
+        for btn in self.category_buttons.values():
+            btn.config(bg=self.default_btn_bg, fg="black",
+                       activebackground=self.default_btn_bg,
+                       activeforeground="black", relief=tk.RAISED)
+
         img_path = self.image_files[self.current_index]
-        image = Image.open(img_path)
+        print(f"Trying to open: {img_path}")  # <-- Log the file being opened
+        self.filename_label.config(text=os.path.basename(img_path))
 
-        # Check if image has EXIF orientation tag and rotate accordingly
+        image_extension = os.path.splitext(img_path)[1].lower()
+
+        # Wrap the open process in a broader try/except so we can skip on error
         try:
-            exif = image._getexif()
-            if exif:
-                orientation = dict(exif).get(274)  # Orientation tag is 274
-                if orientation == 3:
-                    image = image.rotate(180, expand=True)
-                elif orientation == 6:
-                    image = image.rotate(270, expand=True)
-                elif orientation == 8:
-                    image = image.rotate(90, expand=True)
-        except (AttributeError, KeyError, IndexError):
-            pass  # No EXIF data or no orientation tag, skip rotation
+            if image_extension in ['.nef', '.cr2', '.dng']:
+                # Attempt to open RAW
+                with rawpy.imread(img_path) as raw:
+                    rgb = raw.postprocess()
+                image = Image.fromarray(rgb)
+            else:
+                # For standard formats (JPEG, PNG, TIFF, etc.)
+                image = Image.open(img_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Cannot open image file:\n{img_path}\n\n{e}")
+            self.next_image()  # Skip to the next image instead of crashing
+            return
 
+        # Safely handle EXIF orientation
+        exif_data = None
+        try:
+            exif_data = image._getexif()
+        except Exception:
+            pass
+
+        if exif_data:
+            orientation = exif_data.get(274)  # 274 is the Orientation tag
+            if orientation == 3:
+                image = image.rotate(180, expand=True)
+            elif orientation == 6:
+                image = image.rotate(270, expand=True)
+            elif orientation == 8:
+                image = image.rotate(90, expand=True)
+
+        # Resize & display
         image.thumbnail((800, 600))
         self.tk_image = ImageTk.PhotoImage(image)
-
         self.image_label.config(image=self.tk_image)
         self.root.title(f"Photo Catalog - {os.path.basename(img_path)}")
-
 
     def next_image(self):
         """Moves to the next image."""
@@ -117,21 +237,12 @@ class PhotoCatalogApp:
             self.current_index -= 1
             self.load_image()
 
-    def connect_to_db(self):
-        """Establishes a database connection."""
-        try:
-            conn = mysql.connector.connect(**DB_CONFIG)
-            return conn
-        except mysql.connector.Error as err:
-            messagebox.showerror("Database Error", f"Error connecting to database: {err}")
-            return None
-
     def extract_metadata(self, filepath):
         """Extracts EXIF metadata from an image file and converts file size to MB."""
         metadata = {
             "filename": os.path.basename(filepath),
             "filepath": filepath,
-            "size": round(os.path.getsize(filepath) / (1024 * 1024), 2),  # Convert to MB
+            "size": round(os.path.getsize(filepath) / (1024 * 1024), 2),  # MB
             "format": os.path.splitext(filepath)[1].replace('.', '').upper(),
             "date_created": None,
             "camera_model": None,
@@ -151,15 +262,16 @@ class PhotoCatalogApp:
         except Exception as e:
             print(f"EXIF Error: {e}")
 
+        # Convert "None" strings to real None
         for key in metadata:
             if metadata[key] == "None":
                 metadata[key] = None
 
         return metadata
 
-
     def save_metadata(self):
-        """Saves the image metadata, rating, and label to the database and auto-scrolls to the next image."""
+        """Saves the image metadata, rating, and label to the database and auto-scrolls to next image.
+           Overwrites if record already exists."""
         if not self.conn:
             messagebox.showerror("Database Error", "Not connected to database")
             return
@@ -173,20 +285,37 @@ class PhotoCatalogApp:
 
         cursor = self.conn.cursor()
         query = """
-        INSERT INTO Photos (filename, filepath, size, format, date_created, camera_model, 
-                            shutter_speed, aperture, rating, label, marked_for_deletion, timestamp) 
+        INSERT INTO Photos (filename, filepath, size, format, date_created, camera_model,
+                            shutter_speed, aperture, rating, label, marked_for_deletion, timestamp)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-        ON DUPLICATE KEY UPDATE 
-            rating=VALUES(rating), 
-            label=VALUES(label), 
-            marked_for_deletion=VALUES(marked_for_deletion);
+        ON DUPLICATE KEY UPDATE
+            filename=VALUES(filename),
+            filepath=VALUES(filepath),
+            size=VALUES(size),
+            format=VALUES(format),
+            date_created=VALUES(date_created),
+            camera_model=VALUES(camera_model),
+            shutter_speed=VALUES(shutter_speed),
+            aperture=VALUES(aperture),
+            rating=VALUES(rating),
+            label=VALUES(label),
+            marked_for_deletion=VALUES(marked_for_deletion),
+            timestamp=NOW();
         """
 
         try:
             cursor.execute(query, (
-                metadata["filename"], metadata["filepath"], metadata["size"], metadata["format"],
-                metadata["date_created"], metadata["camera_model"],
-                metadata["shutter_speed"], metadata["aperture"], rating, label, marked_for_deletion
+                metadata["filename"], 
+                metadata["filepath"], 
+                metadata["size"], 
+                metadata["format"],
+                metadata["date_created"], 
+                metadata["camera_model"],
+                metadata["shutter_speed"], 
+                metadata["aperture"], 
+                rating, 
+                label, 
+                marked_for_deletion
             ))
             self.conn.commit()
         except mysql.connector.Error as err:
@@ -195,14 +324,22 @@ class PhotoCatalogApp:
             return
 
         cursor.close()
-
-        # Auto-scroll to next image
         self.next_image()
+
+    def select_category(self, category):
+        """Select the category, highlight the chosen tile with green background, un-highlight others."""
+        self.label_var.set(category)
+        for cat, btn in self.category_buttons.items():
+            if cat == category:
+                btn.config(bg="green", fg="white", activebackground="green",
+                           activeforeground="green", relief=tk.SUNKEN)
+            else:
+                btn.config(bg=self.default_btn_bg, fg="black",
+                           activebackground=self.default_btn_bg,
+                           activeforeground="black", relief=tk.RAISED)
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = PhotoCatalogApp(root, "/Users/alanjackson/Pictures")
+    app = PhotoCatalogApp(root, "/Volumes/T5 EVO/DateSortedImages/2024-01/")
     root.mainloop()
-
-# adding something else
