@@ -3,9 +3,11 @@ import tkinter as tk
 from tkinter import messagebox
 import mysql.connector
 import exifread
+import hashlib
 from PIL import Image, ImageTk
 import rawpy
 import numpy as np
+from datetime import datetime
 
 # Configure MySQL Connection
 DB_CONFIG = {
@@ -16,6 +18,21 @@ DB_CONFIG = {
 }
 
 LABEL_CATEGORIES = ["Landscape", "Family", "Vacation", "Portfolio"]
+
+def compute_file_hash(filepath):
+    """
+    Compute and return the SHA-256 hash of a file.
+    Returns None if the file cannot be read.
+    """
+    try:
+        hasher = hashlib.sha256()
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception:
+        return None
+
 
 class PhotoCatalogApp:
     def __init__(self, root, image_dir):
@@ -71,6 +88,15 @@ class PhotoCatalogApp:
             variable=self.delete_var
         )
         self.delete_check.pack(side=tk.LEFT, padx=5)
+
+        ### ADDED: “Do Not Delete” Checkbox ###
+        self.do_not_delete_var = tk.BooleanVar()  # <-- new variable
+        self.do_not_delete_check = tk.Checkbutton(
+            self.controls_frame,
+            text="Do Not Delete",  # <-- text label
+            variable=self.do_not_delete_var
+        )
+        self.do_not_delete_check.pack(side=tk.LEFT, padx=5)
 
         # Rating
         self.rating_var = tk.IntVar(value=0)
@@ -139,6 +165,7 @@ class PhotoCatalogApp:
         if char == 'd':
             self.delete_var.set(not self.delete_var.get())
 
+        # If you wish, you could add a hotkey for "Do Not Delete" as well (e.g., 'x').
 
     def get_image_files(self, directory):
         """Retrieve all image files in directory and subdirectories."""
@@ -157,7 +184,6 @@ class PhotoCatalogApp:
                     image_files.append(os.path.join(root_dir, file))
         return sorted(image_files)
 
-
     def connect_to_db(self):
         """Establishes a database connection."""
         try:
@@ -169,12 +195,14 @@ class PhotoCatalogApp:
 
     def load_image(self):
         """Loads and displays the current image, rotating if necessary.
-        Also clears previous selections."""
+        Also clears previous selections. If the image cannot be opened,
+        we still attempt to store a 'could not open image' record."""
         if not self.image_files:
             return
 
         # Clear all selections for new image
         self.delete_var.set(False)
+        self.do_not_delete_var.set(False)  ### ADDED: Reset "Do Not Delete" on load
         self.rating_var.set(0)
         self.label_var.set("")
         for btn in self.category_buttons.values():
@@ -183,13 +211,11 @@ class PhotoCatalogApp:
                        activeforeground="black", relief=tk.RAISED)
 
         img_path = self.image_files[self.current_index]
-        print(f"Trying to open: {img_path}")  # <-- Log the file being opened
         self.filename_label.config(text=os.path.basename(img_path))
 
-        image_extension = os.path.splitext(img_path)[1].lower()
-
-        # Wrap the open process in a broader try/except so we can skip on error
+        # Attempt to open the file
         try:
+            image_extension = os.path.splitext(img_path)[1].lower()
             if image_extension in ['.nef', '.cr2', '.dng']:
                 # Attempt to open RAW
                 with rawpy.imread(img_path) as raw:
@@ -198,96 +224,59 @@ class PhotoCatalogApp:
             else:
                 # For standard formats (JPEG, PNG, TIFF, etc.)
                 image = Image.open(img_path)
+
+            # Handle EXIF orientation
+            exif_data = None
+            try:
+                exif_data = image._getexif()
+            except Exception:
+                pass
+
+            if exif_data:
+                orientation = exif_data.get(274)  # 274 is the Orientation tag
+                if orientation == 3:
+                    image = image.rotate(180, expand=True)
+                elif orientation == 6:
+                    image = image.rotate(270, expand=True)
+                elif orientation == 8:
+                    image = image.rotate(90, expand=True)
+
+            # Resize & display
+            image.thumbnail((800, 600))
+            self.tk_image = ImageTk.PhotoImage(image)
+            self.image_label.config(image=self.tk_image)
+            self.root.title(f"Photo Catalog - {os.path.basename(img_path)}")
+
         except Exception as e:
-            messagebox.showerror("Error", f"Cannot open image file:\n{img_path}\n\n{e}")
-            self.next_image()  # Skip to the next image instead of crashing
+            # If we cannot open or process the image, store partial info
+            print(f"Could not open image {img_path} due to error: {e}")
+            self.save_could_not_open_image(img_path)
+            self.next_image()
             return
 
-        # Safely handle EXIF orientation
-        exif_data = None
-        try:
-            exif_data = image._getexif()
-        except Exception:
-            pass
-
-        if exif_data:
-            orientation = exif_data.get(274)  # 274 is the Orientation tag
-            if orientation == 3:
-                image = image.rotate(180, expand=True)
-            elif orientation == 6:
-                image = image.rotate(270, expand=True)
-            elif orientation == 8:
-                image = image.rotate(90, expand=True)
-
-        # Resize & display
-        image.thumbnail((800, 600))
-        self.tk_image = ImageTk.PhotoImage(image)
-        self.image_label.config(image=self.tk_image)
-        self.root.title(f"Photo Catalog - {os.path.basename(img_path)}")
-
-    def next_image(self):
-        """Moves to the next image."""
-        if self.current_index < len(self.image_files) - 1:
-            self.current_index += 1
-            self.load_image()
-
-    def previous_image(self):
-        """Moves to the previous image."""
-        if self.current_index > 0:
-            self.current_index -= 1
-            self.load_image()
-
-    def extract_metadata(self, filepath):
-        """Extracts EXIF metadata from an image file and converts file size to MB."""
-        metadata = {
-            "filename": os.path.basename(filepath),
-            "filepath": filepath,
-            "size": round(os.path.getsize(filepath) / (1024 * 1024), 2),  # MB
-            "format": os.path.splitext(filepath)[1].replace('.', '').upper(),
-            "date_created": None,
-            "camera_model": None,
-            "shutter_speed": None,
-            "aperture": None,
-        }
-
-        try:
-            with open(filepath, 'rb') as f:
-                tags = exifread.process_file(f)
-
-            metadata["date_created"] = str(tags.get("EXIF DateTimeOriginal", None))
-            metadata["camera_model"] = str(tags.get("Image Model", None))
-            metadata["shutter_speed"] = str(tags.get("EXIF ExposureTime", None))
-            metadata["aperture"] = str(tags.get("EXIF FNumber", None))
-
-        except Exception as e:
-            print(f"EXIF Error: {e}")
-
-        # Convert "None" strings to real None
-        for key in metadata:
-            if metadata[key] == "None":
-                metadata[key] = None
-
-        return metadata
-
-    def save_metadata(self):
-        """Saves the image metadata, rating, and label to the database and auto-scrolls to next image.
-           Overwrites if record already exists."""
+    def save_could_not_open_image(self, filepath):
+        """
+        Attempts to compute the file hash. If that fails, hash will be None.
+        Inserts a record with label = 'could not open image' and minimal metadata.
+        """
         if not self.conn:
-            messagebox.showerror("Database Error", "Not connected to database")
-            return
+            return  # Can't do anything if no DB connection
 
-        img_path = self.image_files[self.current_index]
-        metadata = self.extract_metadata(img_path)
-
-        rating = self.rating_var.get()
-        label = self.label_var.get() if self.label_var.get() in LABEL_CATEGORIES else None
-        marked_for_deletion = self.delete_var.get()
-
+        file_hash = compute_file_hash(filepath)  # Might be None if it fails
         cursor = self.conn.cursor()
+
+        filename = os.path.basename(filepath)
+        size_mb = None
+        file_format = os.path.splitext(filepath)[1].replace('.', '').upper()
+        camera_model = None
+        date_created = None
+        shutter_speed = None
+        aperture = None
+
         query = """
-        INSERT INTO Photos (filename, filepath, size, format, date_created, camera_model,
-                            shutter_speed, aperture, rating, label, marked_for_deletion, timestamp)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        INSERT INTO Photos (hash, filename, filepath, size, format, date_created, camera_model,
+                            shutter_speed, aperture, rating, label, marked_for_deletion, do_not_delete, timestamp)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
             filename=VALUES(filename),
             filepath=VALUES(filepath),
@@ -300,23 +289,127 @@ class PhotoCatalogApp:
             rating=VALUES(rating),
             label=VALUES(label),
             marked_for_deletion=VALUES(marked_for_deletion),
+            do_not_delete=VALUES(do_not_delete),
             timestamp=NOW();
         """
 
+        data_tuple = (
+            file_hash,
+            filename,
+            filepath,
+            size_mb,
+            file_format,
+            date_created,
+            camera_model,
+            shutter_speed,
+            aperture,
+            0,  # rating
+            "could not open image",  # label
+            False,  # marked_for_deletion
+            False   # do_not_delete
+        )
+
         try:
-            cursor.execute(query, (
-                metadata["filename"], 
-                metadata["filepath"], 
-                metadata["size"], 
-                metadata["format"],
-                metadata["date_created"], 
-                metadata["camera_model"],
-                metadata["shutter_speed"], 
-                metadata["aperture"], 
-                rating, 
-                label, 
-                marked_for_deletion
-            ))
+            cursor.execute(query, data_tuple)
+            self.conn.commit()
+        except mysql.connector.Error as err:
+            print(f"Error inserting 'could not open image' record: {err}")
+        finally:
+            cursor.close()
+
+    def extract_metadata(self, filepath):
+        """Extracts EXIF metadata from an image file and converts file size to MB.
+           Also computes the file hash."""
+        metadata = {
+            "filename": os.path.basename(filepath),
+            "filepath": filepath,
+            "size": round(os.path.getsize(filepath) / (1024 * 1024), 2),  # MB
+            "format": os.path.splitext(filepath)[1].replace('.', '').upper(),
+            "date_created": None,
+            "camera_model": None,
+            "shutter_speed": None,
+            "aperture": None,
+            "hash": None
+        }
+
+        # Compute file hash
+        metadata["hash"] = compute_file_hash(filepath)
+
+        try:
+            with open(filepath, 'rb') as f:
+                tags = exifread.process_file(f)
+            metadata["date_created"] = str(tags.get("EXIF DateTimeOriginal", None))
+            metadata["camera_model"] = str(tags.get("Image Model", None))
+            metadata["shutter_speed"] = str(tags.get("EXIF ExposureTime", None))
+            metadata["aperture"] = str(tags.get("EXIF FNumber", None))
+        except Exception as e:
+            print(f"EXIF Error: {e}")
+
+        # Convert "None" strings to real None
+        for key in metadata:
+            if metadata[key] == "None":
+                metadata[key] = None
+
+        return metadata
+
+    def save_metadata(self):
+        """
+        Saves the image metadata, rating, and label to the database and auto-scrolls to next image.
+        The 'hash' is used as the primary key.
+        """
+        if not self.conn:
+            messagebox.showerror("Database Error", "Not connected to database")
+            return
+
+        img_path = self.image_files[self.current_index]
+        metadata = self.extract_metadata(img_path)
+
+        rating = self.rating_var.get()
+        label = self.label_var.get() if self.label_var.get() in LABEL_CATEGORIES else None
+        marked_for_deletion = self.delete_var.get()
+        do_not_delete = self.do_not_delete_var.get()  ### ADDED: pull the do_not_delete state
+
+        cursor = self.conn.cursor()
+
+        ### CHANGED: Insert now includes the 'do_not_delete' column ###
+        query = """
+        INSERT INTO Photos (hash, filename, filepath, size, format, date_created, camera_model,
+                            shutter_speed, aperture, rating, label, marked_for_deletion, do_not_delete, timestamp)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON DUPLICATE KEY UPDATE
+            filename=VALUES(filename),
+            filepath=VALUES(filepath),
+            size=VALUES(size),
+            format=VALUES(format),
+            date_created=VALUES(date_created),
+            camera_model=VALUES(camera_model),
+            shutter_speed=VALUES(shutter_speed),
+            aperture=VALUES(aperture),
+            rating=VALUES(rating),
+            label=VALUES(label),
+            marked_for_deletion=VALUES(marked_for_deletion),
+            do_not_delete=VALUES(do_not_delete),
+            timestamp=NOW();
+        """
+
+        data_tuple = (
+            metadata["hash"],
+            metadata["filename"],
+            metadata["filepath"],
+            metadata["size"],
+            metadata["format"],
+            metadata["date_created"],
+            metadata["camera_model"],
+            metadata["shutter_speed"],
+            metadata["aperture"],
+            rating,
+            label,
+            marked_for_deletion,
+            do_not_delete
+        )
+
+        try:
+            cursor.execute(query, data_tuple)
             self.conn.commit()
         except mysql.connector.Error as err:
             messagebox.showerror("Database Error", f"Error saving metadata: {err}")
@@ -338,8 +431,21 @@ class PhotoCatalogApp:
                            activebackground=self.default_btn_bg,
                            activeforeground="black", relief=tk.RAISED)
 
+    def next_image(self):
+        """Moves to the next image."""
+        if self.current_index < len(self.image_files) - 1:
+            self.current_index += 1
+            self.load_image()
+
+    def previous_image(self):
+        """Moves to the previous image."""
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.load_image()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
+    # Update this path to your actual image directory
     app = PhotoCatalogApp(root, "/Volumes/T5 EVO/DateSortedImages/2024-01/")
     root.mainloop()
