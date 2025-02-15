@@ -1,6 +1,6 @@
 import os
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk, messagebox
 import mysql.connector
 import exifread
 import hashlib
@@ -20,8 +20,7 @@ DB_CONFIG = {
 LABEL_CATEGORIES = [
     "people", "city", "landscape", "water", "gf", "family",
     "portfolio", "objects", "animals", "trees", "seasonal",
-    "nature", "abstract",
-    "macro"  ### ADDED: new category
+    "nature", "abstract", "macro"
 ]
 
 def compute_file_hash(filepath):
@@ -38,11 +37,32 @@ def compute_file_hash(filepath):
     except Exception:
         return None
 
-
 class PhotoCatalogApp:
     def __init__(self, root, image_dir):
         self.root = root
         self.root.title("Photo Catalog App")
+
+        # === TTK STYLE SETUP ===
+        style = ttk.Style()
+        # Use a theme that generally honors background color settings
+        style.theme_use("clam")
+
+        # Unselected style
+        style.configure(
+            "UnselectedCategory.TButton",
+            font=("Helvetica", 12),
+            foreground="black",
+            background="#d9d9d9",  # typical default button color
+            # For some themes, you may also need to specify relief/border
+        )
+
+        # Selected style
+        style.configure(
+            "SelectedCategory.TButton",
+            font=("Helvetica", 12),
+            foreground="black",
+            background="light green"
+        )
 
         self.image_dir = image_dir
         self.image_files = self.get_image_files(image_dir)
@@ -69,7 +89,7 @@ class PhotoCatalogApp:
             "s": "seasonal",
             "n": "nature",
             "x": "abstract",
-            "m": "macro"  ### ADDED: bind 'm' to "macro"
+            "m": "macro"
         }
 
         # Reverse map so we know which key belongs to each category
@@ -135,9 +155,8 @@ class PhotoCatalogApp:
 
         self.selected_categories = set()
         self.category_buttons = {}
-        self.default_btn_bg = None
 
-        ### CHANGED: Larger font, and new background color logic.
+        # === CREATE THE CATEGORY BUTTONS AS TTK BUTTONS ===
         for category in LABEL_CATEGORIES:
             key_char = self.reverse_category_map.get(category, "")
             if key_char:
@@ -145,20 +164,14 @@ class PhotoCatalogApp:
             else:
                 btn_text = category
 
-            # Create the button, specifying a larger font.
-            btn = tk.Button(
+            btn = ttk.Button(
                 self.category_frame,
                 text=btn_text,
-                width=12,
-                height=2,
-                command=lambda c=category: self.toggle_category(c),
-                relief=tk.RAISED,
-                font=("Helvetica", 12)  ### ADDED: Larger font
+                style="UnselectedCategory.TButton",
+                command=lambda c=category: self.toggle_category(c)
             )
             btn.pack(pady=5)
             self.category_buttons[category] = btn
-            if self.default_btn_bg is None:
-                self.default_btn_bg = btn.cget("bg")
 
         # Save button
         self.save_button = tk.Button(self.controls_frame, text="Save", command=self.save_metadata)
@@ -199,28 +212,15 @@ class PhotoCatalogApp:
     def toggle_category(self, category):
         """
         Toggle the category in selected_categories set.
-        If it becomes selected, highlight the button with light green background,
-        keep text black. If deselected, revert the button to default.
+        If it becomes selected, change style to "SelectedCategory.TButton".
+        If deselected, revert style to "UnselectedCategory.TButton".
         """
         if category in self.selected_categories:
             self.selected_categories.remove(category)
-            self.category_buttons[category].config(
-                bg=self.default_btn_bg,
-                fg="black",
-                activebackground=self.default_btn_bg,
-                activeforeground="black",
-                relief=tk.RAISED
-            )
+            self.category_buttons[category].config(style="UnselectedCategory.TButton")
         else:
             self.selected_categories.add(category)
-            ### CHANGED: Use "light green" background, black text. ###
-            self.category_buttons[category].config(
-                bg="light green",
-                fg="black",
-                activebackground="light green",
-                activeforeground="black",
-                relief=tk.SUNKEN
-            )
+            self.category_buttons[category].config(style="SelectedCategory.TButton")
 
     def get_image_files(self, directory):
         """Retrieve all image files in directory and subdirectories."""
@@ -260,13 +260,9 @@ class PhotoCatalogApp:
         self.do_not_delete_var.set(False)
         self.rating_var.set(0)
 
-        # Clear previously selected categories
+        # Reset all category buttons to unselected
         for cat in self.selected_categories:
-            self.category_buttons[cat].config(
-                bg=self.default_btn_bg,
-                fg="black",
-                relief=tk.RAISED
-            )
+            self.category_buttons[cat].config(style="UnselectedCategory.TButton")
         self.selected_categories.clear()
 
         img_path = self.image_files[self.current_index]
@@ -483,9 +479,8 @@ class PhotoCatalogApp:
             self.current_index -= 1
             self.load_image()
 
-
 if __name__ == "__main__":
     root = tk.Tk()
     # Update this path to your actual image directory
-    app = PhotoCatalogApp(root, "/Volumes/T5 EVO/DateSortedImages/2023-12")
+    app = PhotoCatalogApp(root, "/Volumes/T5 EVO/DateSortedImages/2024-03")
     root.mainloop()
