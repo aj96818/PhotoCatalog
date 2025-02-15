@@ -17,7 +17,11 @@ DB_CONFIG = {
     'database': 'PhotoCatalog'
 }
 
-LABEL_CATEGORIES = ["Landscape", "Family", "Vacation", "Portfolio"]
+LABEL_CATEGORIES = [
+    "people", "city", "landscape", "water", "gf", "family",
+    "portfolio", "objects", "animals", "trees", "seasonal",
+    "nature", "abstract"
+]
 
 def compute_file_hash(filepath):
     """
@@ -38,16 +42,7 @@ class PhotoCatalogApp:
     def __init__(self, root, image_dir):
         self.root = root
         self.root.title("Photo Catalog App")
-        
-        ### ADDED: Maximize the main window ###
-        # On Windows: root.state('zoomed') often works.
-        # On Linux/macOS: root.attributes('-zoomed', True) or root.attributes('-fullscreen', True) might be required.
-        # Try whichever approach suits your platform:
-        # self.root.state('zoomed')  # Typically works on Windows.
-        # self.root.attributes('-fullscreen', True)
 
-        # self.root.attributes('-zoomed', True)  # Alternative for Linux/macOS (try if state('zoomed') doesn't work).
-        
         self.image_dir = image_dir
         self.image_files = self.get_image_files(image_dir)
         self.current_index = 0
@@ -58,13 +53,26 @@ class PhotoCatalogApp:
             root.destroy()
             return
 
-        # For category keyboard shortcuts
+        # This dictionary maps a single character key to a label category.
+        # For example, pressing 'p' toggles "people", pressing 'x' toggles "abstract", etc.
         self.category_map = {
-            "l": "Landscape",
-            "f": "Family",
-            "v": "Vacation",
-            "p": "Portfolio"
+            "p": "people",
+            "c": "city",
+            "l": "landscape",
+            "w": "water",
+            "g": "gf",
+            "f": "family",
+            "[": "portfolio",
+            "o": "objects",
+            "a": "animals",
+            "t": "trees",
+            "s": "seasonal",
+            "n": "nature",
+            "x": "abstract"
         }
+
+        ### ADDED / CHANGED: Create a reverse map to find the key for each category
+        self.reverse_category_map = {v: k for k, v in self.category_map.items()}
 
         # Main frames
         self.top_frame = tk.Frame(root)
@@ -124,18 +132,26 @@ class PhotoCatalogApp:
             rb.pack(side=tk.LEFT)
             self.rating_buttons.append(rb)
 
-        # Category tiles (full category name displayed)
-        self.label_var = tk.StringVar(value="")
+        self.selected_categories = set()
         self.category_buttons = {}
-        self.default_btn_bg = None  # Will store default background color
+        self.default_btn_bg = None
 
+        ### CHANGED: Display the key binding in the button text.
+        # For each category, we look up the reverse_category_map to see if it has a key assigned.
         for category in LABEL_CATEGORIES:
+            # If category is in reverse map, we show something like "abstract (x)"
+            key_char = self.reverse_category_map.get(category, "")
+            if key_char:
+                btn_text = f"{category} ({key_char})"
+            else:
+                btn_text = category  # If no key is mapped, just show category name.
+
             btn = tk.Button(
                 self.category_frame,
-                text=category,
+                text=btn_text,
                 width=12,
                 height=2,
-                command=lambda c=category: self.select_category(c),
+                command=lambda c=category: self.toggle_category(c),
                 relief=tk.RAISED
             )
             btn.pack(pady=5)
@@ -154,31 +170,51 @@ class PhotoCatalogApp:
         # Key bindings
         self.root.bind("<Key>", self.on_key_press)
         self.root.bind("<Return>", lambda e: self.save_metadata())
-
-        ### ADDED: Bind left/right arrows to previous/next
         self.root.bind("<Left>", lambda e: self.previous_image())
         self.root.bind("<Right>", lambda e: self.next_image())
 
         self.load_image()
 
     def on_key_press(self, event):
-        """Handle keyboard shortcuts for ratings (1-4), categories (l, f, v, p),
-           and toggle mark-for-deletion (d)."""
+        """Handle keyboard shortcuts for toggling categories, ratings (1-4),
+           and mark-for-deletion (d)."""
         char = event.char.lower()
 
         # Ratings: 1-4
         if char in ['1', '2', '3', '4']:
             self.rating_var.set(int(char))
+            return
 
-        # Categories: l, f, v, p
+        # If it's in category_map, toggle that category
         if char in self.category_map:
-            self.select_category(self.category_map[char])
+            category = self.category_map[char]
+            self.toggle_category(category)
+            return
 
         # Toggle mark-for-deletion: d
         if char == 'd':
             self.delete_var.set(not self.delete_var.get())
 
-        # (Optionally, you could add a hotkey for "Do Not Delete".)
+    def toggle_category(self, category):
+        """
+        Toggle the category in selected_categories set.
+        If it becomes selected, highlight the button.
+        If deselected, revert the button to default.
+        """
+        if category in self.selected_categories:
+            self.selected_categories.remove(category)
+            self.category_buttons[category].config(
+                bg=self.default_btn_bg, fg="black",
+                activebackground=self.default_btn_bg,
+                activeforeground="black", relief=tk.RAISED
+            )
+        else:
+            self.selected_categories.add(category)
+            self.category_buttons[category].config(
+                bg="green", fg="white",
+                activebackground="green", activeforeground="white",
+                relief=tk.SUNKEN
+            )
 
     def get_image_files(self, directory):
         """Retrieve all image files in directory and subdirectories."""
@@ -208,34 +244,33 @@ class PhotoCatalogApp:
 
     def load_image(self):
         """Loads and displays the current image, rotating if necessary.
-        Also clears previous selections. If the image cannot be opened,
-        we still attempt to store a 'could not open image' record."""
+        Clears previous selections. If the image cannot be opened,
+        store a partial record."""
         if not self.image_files:
             return
 
-        # Clear all selections for new image
+        # Clear checkboxes / rating for new image
         self.delete_var.set(False)
         self.do_not_delete_var.set(False)
         self.rating_var.set(0)
-        self.label_var.set("")
-        for btn in self.category_buttons.values():
-            btn.config(bg=self.default_btn_bg, fg="black",
-                       activebackground=self.default_btn_bg,
-                       activeforeground="black", relief=tk.RAISED)
+
+        # Clear previously selected categories
+        for cat in self.selected_categories:
+            self.category_buttons[cat].config(
+                bg=self.default_btn_bg, fg="black", relief=tk.RAISED
+            )
+        self.selected_categories.clear()
 
         img_path = self.image_files[self.current_index]
         self.filename_label.config(text=os.path.basename(img_path))
 
-        # Attempt to open the file
         try:
             image_extension = os.path.splitext(img_path)[1].lower()
             if image_extension in ['.nef', '.cr2', '.dng']:
-                # Attempt to open RAW
                 with rawpy.imread(img_path) as raw:
                     rgb = raw.postprocess()
                 image = Image.fromarray(rgb)
             else:
-                # For standard formats (JPEG, PNG, TIFF, etc.)
                 image = Image.open(img_path)
 
             # Handle EXIF orientation
@@ -246,7 +281,7 @@ class PhotoCatalogApp:
                 pass
 
             if exif_data:
-                orientation = exif_data.get(274)  # 274 is the Orientation tag
+                orientation = exif_data.get(274)
                 if orientation == 3:
                     image = image.rotate(180, expand=True)
                 elif orientation == 6:
@@ -255,14 +290,12 @@ class PhotoCatalogApp:
                     image = image.rotate(90, expand=True)
 
             # Resize & display
-            # You can change the max size to fit your screen better if desired
             image.thumbnail((1400, 1000))
             self.tk_image = ImageTk.PhotoImage(image)
             self.image_label.config(image=self.tk_image)
             self.root.title(f"Photo Catalog - {os.path.basename(img_path)}")
 
         except Exception as e:
-            # If we cannot open or process the image, store partial info
             print(f"Could not open image {img_path} due to error: {e}")
             self.save_could_not_open_image(img_path)
             self.next_image()
@@ -271,12 +304,12 @@ class PhotoCatalogApp:
     def save_could_not_open_image(self, filepath):
         """
         Attempts to compute the file hash. If that fails, hash will be None.
-        Inserts a record with label = 'could not open image' and minimal metadata.
+        Inserts a record with label='could not open image' and minimal metadata.
         """
         if not self.conn:
-            return  # Can't do anything if no DB connection
+            return
 
-        file_hash = compute_file_hash(filepath)  # Might be None if it fails
+        file_hash = compute_file_hash(filepath)
         cursor = self.conn.cursor()
 
         filename = os.path.basename(filepath)
@@ -332,8 +365,7 @@ class PhotoCatalogApp:
             cursor.close()
 
     def extract_metadata(self, filepath):
-        """Extracts EXIF metadata from an image file and converts file size to MB.
-           Also computes the file hash."""
+        """Extract EXIF metadata from an image file and compute file hash."""
         metadata = {
             "filename": os.path.basename(filepath),
             "filepath": filepath,
@@ -346,7 +378,6 @@ class PhotoCatalogApp:
             "hash": None
         }
 
-        # Compute file hash
         metadata["hash"] = compute_file_hash(filepath)
 
         try:
@@ -368,8 +399,8 @@ class PhotoCatalogApp:
 
     def save_metadata(self):
         """
-        Saves the image metadata, rating, and label to the database and auto-scrolls to next image.
-        The 'hash' is used as the primary key.
+        Saves the image metadata, rating, and (multiple) label categories 
+        as a comma-separated list in the DB. The 'hash' is used as the primary key.
         """
         if not self.conn:
             messagebox.showerror("Database Error", "Not connected to database")
@@ -379,7 +410,7 @@ class PhotoCatalogApp:
         metadata = self.extract_metadata(img_path)
 
         rating = self.rating_var.get()
-        label = self.label_var.get() if self.label_var.get() in LABEL_CATEGORIES else None
+        labels_csv = ",".join(sorted(self.selected_categories))
         marked_for_deletion = self.delete_var.get()
         do_not_delete = self.do_not_delete_var.get()
 
@@ -416,7 +447,7 @@ class PhotoCatalogApp:
             metadata["shutter_speed"],
             metadata["aperture"],
             rating,
-            label,
+            labels_csv,
             marked_for_deletion,
             do_not_delete
         )
@@ -431,18 +462,6 @@ class PhotoCatalogApp:
 
         cursor.close()
         self.next_image()
-
-    def select_category(self, category):
-        """Select the category, highlight the chosen tile with green background, un-highlight others."""
-        self.label_var.set(category)
-        for cat, btn in self.category_buttons.items():
-            if cat == category:
-                btn.config(bg="green", fg="white", activebackground="green",
-                           activeforeground="green", relief=tk.SUNKEN)
-            else:
-                btn.config(bg=self.default_btn_bg, fg="black",
-                           activebackground=self.default_btn_bg,
-                           activeforeground="black", relief=tk.RAISED)
 
     def next_image(self):
         """Moves to the next image."""
@@ -460,5 +479,5 @@ class PhotoCatalogApp:
 if __name__ == "__main__":
     root = tk.Tk()
     # Update this path to your actual image directory
-    app = PhotoCatalogApp(root, "/Volumes/T5 EVO/DateSortedImages/2024-01/")
+    app = PhotoCatalogApp(root, "/Volumes/T5 EVO/DateSortedImages/2024-03")
     root.mainloop()
