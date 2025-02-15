@@ -20,7 +20,8 @@ DB_CONFIG = {
 LABEL_CATEGORIES = [
     "people", "city", "landscape", "water", "gf", "family",
     "portfolio", "objects", "animals", "trees", "seasonal",
-    "nature", "abstract"
+    "nature", "abstract",
+    "macro"  ### ADDED: new category
 ]
 
 def compute_file_hash(filepath):
@@ -53,8 +54,7 @@ class PhotoCatalogApp:
             root.destroy()
             return
 
-        # This dictionary maps a single character key to a label category.
-        # For example, pressing 'p' toggles "people", pressing 'x' toggles "abstract", etc.
+        # Maps key presses to categories
         self.category_map = {
             "p": "people",
             "c": "city",
@@ -68,10 +68,11 @@ class PhotoCatalogApp:
             "t": "trees",
             "s": "seasonal",
             "n": "nature",
-            "x": "abstract"
+            "x": "abstract",
+            "m": "macro"  ### ADDED: bind 'm' to "macro"
         }
 
-        ### ADDED / CHANGED: Create a reverse map to find the key for each category
+        # Reverse map so we know which key belongs to each category
         self.reverse_category_map = {v: k for k, v in self.category_map.items()}
 
         # Main frames
@@ -136,23 +137,23 @@ class PhotoCatalogApp:
         self.category_buttons = {}
         self.default_btn_bg = None
 
-        ### CHANGED: Display the key binding in the button text.
-        # For each category, we look up the reverse_category_map to see if it has a key assigned.
+        ### CHANGED: Larger font, and new background color logic.
         for category in LABEL_CATEGORIES:
-            # If category is in reverse map, we show something like "abstract (x)"
             key_char = self.reverse_category_map.get(category, "")
             if key_char:
                 btn_text = f"{category} ({key_char})"
             else:
-                btn_text = category  # If no key is mapped, just show category name.
+                btn_text = category
 
+            # Create the button, specifying a larger font.
             btn = tk.Button(
                 self.category_frame,
                 text=btn_text,
                 width=12,
                 height=2,
                 command=lambda c=category: self.toggle_category(c),
-                relief=tk.RAISED
+                relief=tk.RAISED,
+                font=("Helvetica", 12)  ### ADDED: Larger font
             )
             btn.pack(pady=5)
             self.category_buttons[category] = btn
@@ -198,21 +199,26 @@ class PhotoCatalogApp:
     def toggle_category(self, category):
         """
         Toggle the category in selected_categories set.
-        If it becomes selected, highlight the button.
-        If deselected, revert the button to default.
+        If it becomes selected, highlight the button with light green background,
+        keep text black. If deselected, revert the button to default.
         """
         if category in self.selected_categories:
             self.selected_categories.remove(category)
             self.category_buttons[category].config(
-                bg=self.default_btn_bg, fg="black",
+                bg=self.default_btn_bg,
+                fg="black",
                 activebackground=self.default_btn_bg,
-                activeforeground="black", relief=tk.RAISED
+                activeforeground="black",
+                relief=tk.RAISED
             )
         else:
             self.selected_categories.add(category)
+            ### CHANGED: Use "light green" background, black text. ###
             self.category_buttons[category].config(
-                bg="green", fg="white",
-                activebackground="green", activeforeground="white",
+                bg="light green",
+                fg="black",
+                activebackground="light green",
+                activeforeground="black",
                 relief=tk.SUNKEN
             )
 
@@ -257,7 +263,9 @@ class PhotoCatalogApp:
         # Clear previously selected categories
         for cat in self.selected_categories:
             self.category_buttons[cat].config(
-                bg=self.default_btn_bg, fg="black", relief=tk.RAISED
+                bg=self.default_btn_bg,
+                fg="black",
+                relief=tk.RAISED
             )
         self.selected_categories.clear()
 
@@ -479,5 +487,5 @@ class PhotoCatalogApp:
 if __name__ == "__main__":
     root = tk.Tk()
     # Update this path to your actual image directory
-    app = PhotoCatalogApp(root, "/Volumes/T5 EVO/DateSortedImages/2024-03")
+    app = PhotoCatalogApp(root, "/Volumes/T5 EVO/DateSortedImages/2023-12")
     root.mainloop()
