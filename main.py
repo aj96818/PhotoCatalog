@@ -38,7 +38,16 @@ class PhotoCatalogApp:
     def __init__(self, root, image_dir):
         self.root = root
         self.root.title("Photo Catalog App")
+        
+        ### ADDED: Maximize the main window ###
+        # On Windows: root.state('zoomed') often works.
+        # On Linux/macOS: root.attributes('-zoomed', True) or root.attributes('-fullscreen', True) might be required.
+        # Try whichever approach suits your platform:
+        # self.root.state('zoomed')  # Typically works on Windows.
+        # self.root.attributes('-fullscreen', True)
 
+        # self.root.attributes('-zoomed', True)  # Alternative for Linux/macOS (try if state('zoomed') doesn't work).
+        
         self.image_dir = image_dir
         self.image_files = self.get_image_files(image_dir)
         self.current_index = 0
@@ -89,11 +98,11 @@ class PhotoCatalogApp:
         )
         self.delete_check.pack(side=tk.LEFT, padx=5)
 
-        ### ADDED: “Do Not Delete” Checkbox ###
-        self.do_not_delete_var = tk.BooleanVar()  # <-- new variable
+        # Do Not Delete
+        self.do_not_delete_var = tk.BooleanVar()
         self.do_not_delete_check = tk.Checkbutton(
             self.controls_frame,
-            text="Do Not Delete",  # <-- text label
+            text="Do Not Delete",
             variable=self.do_not_delete_var
         )
         self.do_not_delete_check.pack(side=tk.LEFT, padx=5)
@@ -146,6 +155,10 @@ class PhotoCatalogApp:
         self.root.bind("<Key>", self.on_key_press)
         self.root.bind("<Return>", lambda e: self.save_metadata())
 
+        ### ADDED: Bind left/right arrows to previous/next
+        self.root.bind("<Left>", lambda e: self.previous_image())
+        self.root.bind("<Right>", lambda e: self.next_image())
+
         self.load_image()
 
     def on_key_press(self, event):
@@ -165,7 +178,7 @@ class PhotoCatalogApp:
         if char == 'd':
             self.delete_var.set(not self.delete_var.get())
 
-        # If you wish, you could add a hotkey for "Do Not Delete" as well (e.g., 'x').
+        # (Optionally, you could add a hotkey for "Do Not Delete".)
 
     def get_image_files(self, directory):
         """Retrieve all image files in directory and subdirectories."""
@@ -202,7 +215,7 @@ class PhotoCatalogApp:
 
         # Clear all selections for new image
         self.delete_var.set(False)
-        self.do_not_delete_var.set(False)  ### ADDED: Reset "Do Not Delete" on load
+        self.do_not_delete_var.set(False)
         self.rating_var.set(0)
         self.label_var.set("")
         for btn in self.category_buttons.values():
@@ -242,7 +255,8 @@ class PhotoCatalogApp:
                     image = image.rotate(90, expand=True)
 
             # Resize & display
-            image.thumbnail((800, 600))
+            # You can change the max size to fit your screen better if desired
+            image.thumbnail((1400, 1000))
             self.tk_image = ImageTk.PhotoImage(image)
             self.image_label.config(image=self.tk_image)
             self.root.title(f"Photo Catalog - {os.path.basename(img_path)}")
@@ -306,7 +320,7 @@ class PhotoCatalogApp:
             0,  # rating
             "could not open image",  # label
             False,  # marked_for_deletion
-            False   # do_not_delete
+            False,  # do_not_delete
         )
 
         try:
@@ -367,11 +381,10 @@ class PhotoCatalogApp:
         rating = self.rating_var.get()
         label = self.label_var.get() if self.label_var.get() in LABEL_CATEGORIES else None
         marked_for_deletion = self.delete_var.get()
-        do_not_delete = self.do_not_delete_var.get()  ### ADDED: pull the do_not_delete state
+        do_not_delete = self.do_not_delete_var.get()
 
         cursor = self.conn.cursor()
 
-        ### CHANGED: Insert now includes the 'do_not_delete' column ###
         query = """
         INSERT INTO Photos (hash, filename, filepath, size, format, date_created, camera_model,
                             shutter_speed, aperture, rating, label, marked_for_deletion, do_not_delete, timestamp)
